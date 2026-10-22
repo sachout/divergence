@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Scanner de divergences RSI - S&P 500 + Nasdaq - timeframes DAILY et WEEKLY uniquement.
-Ne garde QUE les divergences où le RSI est en surachat (>=70) ou en survente (<=30).
+Ne garde QUE les divergences où le RSI est en surachat (>=70) ou en survente (<=30),
+et élimine celles dont le RSI a déjà recroisé la barre des 50 depuis le 2e pivot.
 
 Lancement :  python3 scanner_divergences_rsi.py
 -> génère divergences_rsi.html (un graphique prix + RSI par divergence) et l'ouvre.
@@ -11,7 +12,8 @@ Installation (une fois) :
 
 Options :
     --tf daily | weekly | both   (défaut : both)
-    --confirmed-only             seulement si le RSI a recroisé 50 après le 2e pivot
+    --keep-crossed               garder aussi les divergences dont le RSI a déjà recroisé 50
+                                 (par défaut elles sont ÉLIMINÉES)
     --nasdaq-all                 tout le Nasdaq (~3000 titres) au lieu du Nasdaq-100
 """
 import argparse
@@ -105,7 +107,7 @@ def detect(df, order=5, min_gap=5, max_gap=60, ob=70, os_=30, max_age=10):
     px, rv, n = close.values, rsi.values, len(close)
     out = []
 
-    def confirmed(i2, bearish):
+    def crossed50(i2, bearish):
         after = rv[i2:]
         return bool(np.any(after < 50) if bearish else np.any(after > 50))
 
@@ -119,7 +121,7 @@ def detect(df, order=5, min_gap=5, max_gap=60, ob=70, os_=30, max_age=10):
                 and px[i2] > px[i1] and rv[i2] < rv[i1]
                 and max(rv[i1], rv[i2]) >= ob):
             out.append(("BAISSIERE", close.index[i1], close.index[i2],
-                        px[i1], px[i2], rv[i1], rv[i2], n - 1 - i2, confirmed(i2, True)))
+                        px[i1], px[i2], rv[i1], rv[i2], n - 1 - i2, crossed50(i2, True)))
 
     if len(lows) >= 2:
         i1, i2 = lows[-2], lows[-1]
@@ -128,16 +130,16 @@ def detect(df, order=5, min_gap=5, max_gap=60, ob=70, os_=30, max_age=10):
                 and px[i2] < px[i1] and rv[i2] > rv[i1]
                 and min(rv[i1], rv[i2]) <= os_):
             out.append(("HAUSSIERE", close.index[i1], close.index[i2],
-                        px[i1], px[i2], rv[i1], rv[i2], n - 1 - i2, confirmed(i2, False)))
+                        px[i1], px[i2], rv[i1], rv[i2], n - 1 - i2, crossed50(i2, False)))
     return out
 
 
 # ----------------------------- Scan multi-timeframe -----------------------------
 COLS = ["Ticker", "TF", "Type", "Date1", "Date2", "Prix1", "Prix2",
-        "RSI1", "RSI2", "Age", "Confirmee"]
+        "RSI1", "RSI2", "Age", "Croise50"]
 
 
-def run_scan(tickers, tfs, ob=70, os_=30, batch=100, confirmed_only=False):
+def run_scan(tickers, tfs, ob=70, os_=30, batch=100, keep_crossed=False):
     rows, frames = [], {}
     for tf in tfs:
         cfg = TF_CONFIG[tf]
@@ -162,8 +164,9 @@ def run_scan(tickers, tfs, ob=70, os_=30, batch=100, confirmed_only=False):
                 except Exception:
                     continue
     res = pd.DataFrame(rows, columns=COLS)
-    if confirmed_only:
-        res = res[res["Confirmee"]]
+    if not keep_crossed:
+        # on élimine les divergences dont le RSI a déjà recroisé 50 depuis le 2e pivot
+        res = res[~res["Croise50"]].reset_index(drop=True)
     # même action, même sens, détectée en Daily ET en Weekly = signal fort
     res["Les2"] = False
     if not res.empty:
@@ -270,8 +273,7 @@ def section(df, title, cls, charts):
     for _, r in df.iterrows():
         t = html.escape(r["Ticker"])
         img = charts.get((r["Ticker"], r["TF"], r["Type"]), "")
-        conf = ('<span class="ok">✔ confirmée</span>' if r["Confirmee"]
-                else '<span class="pend">non confirmée</span>')
+        conf = ('<span class="pend">RSI déjà repassé 50</span>' if r["Croise50"] else "")
         both = '<span class="both">Daily + Weekly</span>' if r["Les2"] else ""
         h.append(
             f'<div class="card" data-tf="{r["TF"]}"><div class="top">'
@@ -297,7 +299,8 @@ def build_html(res, n_tickers, a, charts):
 <div class="sub">Scan du {datetime.now():%d/%m/%Y %H:%M} · {n_tickers} actions (S&amp;P 500 + Nasdaq) ·
 {tfs} · RSI(14) · surachat ≥ {a.overbought:g} / survente ≤ {a.oversold:g}<br>
 Sur chaque graphique, la ligne colorée relie les deux pivots sur le prix (haut) et sur le RSI (bas).
-Le badge « Daily + Weekly » signale la même divergence sur les deux timeframes.</div>
+Le badge « Daily + Weekly » signale la même divergence sur les deux timeframes.<br>
+Les divergences dont le RSI a déjà recroisé 50 depuis le 2e pivot sont éliminées.</div>
 <div class="filters"><button data-f="all" class="on">Daily + Weekly</button>
 <button data-f="Daily">Daily</button><button data-f="Weekly">Weekly</button></div>
 {section(bear, "Divergences baissières (RSI en surachat)", "bear", charts)}
@@ -311,7 +314,8 @@ def main():
     ap.add_argument("--tf", choices=["daily", "weekly", "both"], default="both")
     ap.add_argument("--overbought", type=float, default=70)
     ap.add_argument("--oversold", type=float, default=30)
-    ap.add_argument("--confirmed-only", action="store_true")
+    ap.add_argument("--keep-crossed", action="store_true",
+                    help="garder les divergences dont le RSI a déjà recroisé 50")
     ap.add_argument("--nasdaq-all", action="store_true")
     ap.add_argument("--batch", type=int, default=100)
     ap.add_argument("--out", default="divergences_rsi.html")
@@ -328,7 +332,7 @@ def main():
     print(f"{len(tickers)} actions à scanner.")
 
     res, frames = run_scan(tickers, a.tfs, a.overbought, a.oversold,
-                           a.batch, a.confirmed_only)
+                           a.batch, a.keep_crossed)
     print(f"\n{len(res)} divergences. Création des graphiques...")
     charts = make_charts(res, frames, a.overbought, a.oversold)
 
