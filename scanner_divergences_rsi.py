@@ -3,6 +3,8 @@
 Scanner de divergences RSI - S&P 500 + Nasdaq - timeframes DAILY et WEEKLY uniquement.
 Ne garde QUE les divergences où le RSI est en surachat (>=70) ou en survente (<=30),
 et élimine celles dont le RSI a déjà recroisé la barre des 50 depuis le 2e pivot.
+Règles : 5 à 15 bougies entre les deux pivots ; le « bruit » (extrême du RSI entre les
+deux pivots) ne doit pas dépasser 40 (haussière) ni descendre sous 60 (baissière).
 
 Lancement :  python3 scanner_divergences_rsi.py
 -> génère divergences_rsi.html (un graphique prix + RSI par divergence) et l'ouvre.
@@ -41,12 +43,16 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # Réglages par timeframe (modifiables)
 #   order   : nb de barres de chaque côté pour valider un sommet/creux
-#   min/max_gap : écart (en barres) autorisé entre les deux pivots
+#   min/max_gap : écart (en bougies) autorisé entre les deux pivots : 5 à 15, pas plus pas moins
 #   max_age : le 2e pivot doit dater de moins de X barres
 TF_CONFIG = {
-    "Daily":  dict(interval="1d",  period="1y", order=5, min_gap=5, max_gap=60, max_age=10),
-    "Weekly": dict(interval="1wk", period="5y", order=3, min_gap=4, max_gap=40, max_age=4),
+    "Daily":  dict(interval="1d",  period="1y", order=4, min_gap=5, max_gap=15, max_age=10),
+    "Weekly": dict(interval="1wk", period="5y", order=3, min_gap=5, max_gap=15, max_age=4),
 }
+
+# « Bruit » = extrême du RSI entre les deux pivots de la divergence
+NOISE_BEAR_MIN = 60   # baissière : le RSI entre les 2 sommets ne doit pas descendre sous 60
+NOISE_BULL_MAX = 40   # haussière : le RSI entre les 2 creux ne doit pas dépasser 40
 
 
 # ----------------------------- Univers -----------------------------
@@ -93,12 +99,12 @@ def rsi_wilder(close, n=14):
     loss = -delta.clip(upper=0)
     avg_gain = gain.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
     avg_loss = loss.ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rs = avg_gain / avg_loss          # perte nulle -> rs infini -> RSI = 100 (et non NaN)
     return 100 - 100 / (1 + rs)
 
 
 # ----------------------------- Détection -----------------------------
-def detect(df, order=5, min_gap=5, max_gap=60, ob=70, os_=30, max_age=10):
+def detect(df, order=4, min_gap=5, max_gap=15, ob=70, os_=30, max_age=10):
     """Divergences régulières, RSI en surachat/survente uniquement."""
     close = df["Close"].dropna()
     if len(close) < 60:
@@ -116,27 +122,33 @@ def detect(df, order=5, min_gap=5, max_gap=60, ob=70, os_=30, max_age=10):
 
     if len(highs) >= 2:
         i1, i2 = highs[-2], highs[-1]
+        seg = rv[i1 + 1:i2]                       # le « bruit » : RSI entre les deux sommets
         if (min_gap <= i2 - i1 <= max_gap and n - 1 - i2 <= max_age
-                and not np.isnan(rv[i1]) and not np.isnan(rv[i2])
+                and not np.isnan(rv[i1]) and not np.isnan(rv[i2]) and not np.isnan(seg).any()
                 and px[i2] > px[i1] and rv[i2] < rv[i1]
-                and max(rv[i1], rv[i2]) >= ob):
+                and max(rv[i1], rv[i2]) >= ob
+                and seg.min() >= NOISE_BEAR_MIN):
             out.append(("BAISSIERE", close.index[i1], close.index[i2],
-                        px[i1], px[i2], rv[i1], rv[i2], n - 1 - i2, crossed50(i2, True)))
+                        px[i1], px[i2], rv[i1], rv[i2], n - 1 - i2,
+                        crossed50(i2, True), float(seg.min())))
 
     if len(lows) >= 2:
         i1, i2 = lows[-2], lows[-1]
+        seg = rv[i1 + 1:i2]                       # le « bruit » : RSI entre les deux creux
         if (min_gap <= i2 - i1 <= max_gap and n - 1 - i2 <= max_age
-                and not np.isnan(rv[i1]) and not np.isnan(rv[i2])
+                and not np.isnan(rv[i1]) and not np.isnan(rv[i2]) and not np.isnan(seg).any()
                 and px[i2] < px[i1] and rv[i2] > rv[i1]
-                and min(rv[i1], rv[i2]) <= os_):
+                and min(rv[i1], rv[i2]) <= os_
+                and seg.max() <= NOISE_BULL_MAX):
             out.append(("HAUSSIERE", close.index[i1], close.index[i2],
-                        px[i1], px[i2], rv[i1], rv[i2], n - 1 - i2, crossed50(i2, False)))
+                        px[i1], px[i2], rv[i1], rv[i2], n - 1 - i2,
+                        crossed50(i2, False), float(seg.max())))
     return out
 
 
 # ----------------------------- Scan multi-timeframe -----------------------------
 COLS = ["Ticker", "TF", "Type", "Date1", "Date2", "Prix1", "Prix2",
-        "RSI1", "RSI2", "Age", "Croise50"]
+        "RSI1", "RSI2", "Age", "Croise50", "Bruit"]
 
 
 def run_scan(tickers, tfs, ob=70, os_=30, batch=100, keep_crossed=False):
@@ -201,8 +213,17 @@ def make_chart(df, r, ob, os_):
     ax2.axhspan(ob, 100, color="#c0392b", alpha=0.07)
     ax2.axhspan(0, os_, color="#1e8449", alpha=0.07)
     ax2.plot([d1, d2], [r["RSI1"], r["RSI2"]], color=col, lw=2.2, marker="o", ms=5)
+    bear = r["Type"] == "BAISSIERE"
+    seg = rsi.iloc[i1 + 1:i2]
+    if len(seg):
+        ni = seg.idxmin() if bear else seg.idxmax()          # le « bruit »
+        ax2.plot([ni], [seg[ni]], marker="s", ms=5, color="#e67e22", zorder=5)
+        ax2.annotate("bruit", (ni, seg[ni]), textcoords="offset points",
+                     xytext=(0, -12 if bear else 7), ha="center", fontsize=7, color="#e67e22")
+    lim = NOISE_BEAR_MIN if bear else NOISE_BULL_MAX
+    ax2.axhline(lim, ls=":", lw=0.9, color="#e67e22")
     ax2.set_ylim(0, 100)
-    ax2.set_yticks([os_, 50, ob])
+    ax2.set_yticks(sorted({os_, 50, ob, lim}))
     ax2.set_ylabel("RSI 14", fontsize=8)
     ax2.xaxis.set_major_formatter(mdates.DateFormatter("%m/%y" if weekly else "%d/%m"))
     for ax in (ax1, ax2):
@@ -280,7 +301,7 @@ def section(df, title, cls, charts):
             f'<a href="https://www.tradingview.com/chart/?symbol={t}" target="_blank">{t}</a>'
             f'<div class="badges">{both}<span class="tf">{r["TF"]}</span>{conf}</div></div>'
             f'<div class="info">Prix {r["Prix1"]:.2f} → {r["Prix2"]:.2f} · '
-            f'RSI {r["RSI1"]:.1f} → {r["RSI2"]:.1f}<br>'
+            f'RSI {r["RSI1"]:.1f} → {r["RSI2"]:.1f} · bruit {r["Bruit"]:.1f}<br>'
             f'{pd.Timestamp(r["Date1"]):%d/%m/%Y} → {pd.Timestamp(r["Date2"]):%d/%m/%Y} · '
             f'il y a {r["Age"]} barres</div>'
             + (f'<img alt="{t}" src="data:image/png;base64,{img}">' if img else "") + "</div>")
@@ -292,6 +313,8 @@ def build_html(res, n_tickers, a, charts):
     bear = res[res["Type"] == "BAISSIERE"]
     bull = res[res["Type"] == "HAUSSIERE"]
     tfs = " + ".join(a.tfs)
+    c = TF_CONFIG[a.tfs[0]]
+    gap_txt = f"{c['min_gap']} à {c['max_gap']}"
     return f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Divergences RSI</title><style>{CSS}</style></head><body>
@@ -300,7 +323,8 @@ def build_html(res, n_tickers, a, charts):
 {tfs} · RSI(14) · surachat ≥ {a.overbought:g} / survente ≤ {a.oversold:g}<br>
 Sur chaque graphique, la ligne colorée relie les deux pivots sur le prix (haut) et sur le RSI (bas).
 Le badge « Daily + Weekly » signale la même divergence sur les deux timeframes.<br>
-Les divergences dont le RSI a déjà recroisé 50 depuis le 2e pivot sont éliminées.</div>
+Les divergences dont le RSI a déjà recroisé 50 depuis le 2e pivot sont éliminées.<br>
+Filtres : {gap_txt} bougies entre les deux pivots · bruit (RSI entre les pivots) ≥ {NOISE_BEAR_MIN} pour une baissière, ≤ {NOISE_BULL_MAX} pour une haussière.</div>
 <div class="filters"><button data-f="all" class="on">Daily + Weekly</button>
 <button data-f="Daily">Daily</button><button data-f="Weekly">Weekly</button></div>
 {section(bear, "Divergences baissières (RSI en surachat)", "bear", charts)}
