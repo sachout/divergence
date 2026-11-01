@@ -3,7 +3,7 @@
 Scanner de divergences RSI - S&P 500 + Nasdaq - timeframes DAILY et WEEKLY uniquement.
 Ne garde QUE les divergences où le RSI est en surachat (>=70) ou en survente (<=30),
 et élimine celles dont le RSI a déjà recroisé la barre des 50 depuis le 2e pivot.
-Règles : 5 à 15 bougies entre les deux pivots ; le « bruit » (extrême du RSI entre les
+Règles : 5 à 16 bougies entre les deux pivots ; le « bruit » (extrême du RSI entre les
 deux pivots) ne doit pas dépasser 40 (haussière) ni descendre sous 60 (baissière).
 
 Lancement :  python3 scanner_divergences_rsi.py
@@ -44,11 +44,12 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # Réglages par timeframe (modifiables)
 #   order   : nb de barres de chaque côté pour valider un sommet/creux
-#   min/max_gap : écart (en bougies) autorisé entre les deux pivots : 5 à 15, pas plus pas moins
+#   min/max_gap : écart (en bougies) autorisé entre les deux pivots : GAP_MIN à GAP_MAX, pas plus pas moins
 #   max_age : le 2e pivot doit dater de moins de X barres
+GAP_MIN, GAP_MAX = 5, 16      # nombre de bougies entre les deux pivots (bornes incluses)
 TF_CONFIG = {
-    "Daily":  dict(interval="1d",  period="1y", order=4, min_gap=5, max_gap=15, max_age=10),
-    "Weekly": dict(interval="1wk", period="5y", order=3, min_gap=5, max_gap=15, max_age=4),
+    "Daily":  dict(interval="1d",  period="1y", order=4, min_gap=GAP_MIN, max_gap=GAP_MAX, max_age=10),
+    "Weekly": dict(interval="1wk", period="5y", order=3, min_gap=GAP_MIN, max_gap=GAP_MAX, max_age=4),
 }
 
 MARKETS = {"us": "S&P 500 + Nasdaq", "tsx": "TSX · S&P/TSX Composite"}
@@ -137,7 +138,7 @@ def rsi_wilder(close, n=14):
 
 
 # ----------------------------- Détection -----------------------------
-def detect(df, order=4, min_gap=5, max_gap=15, ob=70, os_=30, max_age=10):
+def detect(df, order=4, min_gap=5, max_gap=16, ob=70, os_=30, max_age=10):
     """Divergences régulières, RSI en surachat/survente uniquement."""
     close = df["Close"].dropna()
     if len(close) < 60:
@@ -265,7 +266,7 @@ def make_chart(df, r, ob, os_):
         for sp in ("top", "right"):
             ax.spines[sp].set_visible(False)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=90, bbox_inches="tight", facecolor="white")
+    fig.savefig(buf, format="png", dpi=90, bbox_inches="tight", transparent=True)
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode()
 
@@ -283,27 +284,38 @@ def make_charts(res, frames, ob, os_):
 
 # ----------------------------- Rapport HTML -----------------------------
 CSS = """
-body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:16px;background:#f5f6f8;color:#1a1a1a}
-h1{font-size:20px;margin:0 0 4px} .sub{color:#666;font-size:13px;margin-bottom:10px}
-h2{font-size:17px;margin:26px 0 10px} .bear h2{color:#c0392b} .bull h2{color:#1e8449}
+:root{--bg:#f5f6f8;--fg:#1a1a1a;--muted:#666;--card:#fff;--border:#bbb;--info:#555;--tfbg:#eef1f5;
+--link:#0b5ed7;--shadow:rgba(0,0,0,.12);--bear:#c0392b;--bull:#1e8449;--pend:#b9770e}
+html[data-theme="dark"]{--bg:#0f1115;--fg:#e8e8ea;--muted:#9aa0aa;--card:#1a1d23;--border:#3a3f4a;--info:#b4b9c2;
+--tfbg:#2a2f38;--link:#6ea8fe;--shadow:rgba(0,0,0,.6);--bear:#ff7b6e;--bull:#4cd08a;--pend:#e0a040;color-scheme:dark}
+body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:16px;background:var(--bg);color:var(--fg)}
+h1{font-size:20px;margin:0 0 4px;padding-right:48px} .sub{color:var(--muted);font-size:13px;margin-bottom:10px}
+h2{font-size:17px;margin:26px 0 10px} .bear h2{color:var(--bear)} .bull h2{color:var(--bull)}
+.theme{position:fixed;top:12px;right:12px;z-index:10;width:40px;height:40px;border-radius:50%;
+border:1px solid var(--border);background:var(--card);color:var(--fg);font-size:18px;cursor:pointer;box-shadow:0 1px 4px var(--shadow)}
 .nav{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
-.nav a{padding:6px 14px;border-radius:999px;border:1px solid #bbb;background:#fff;color:#1a1a1a;text-decoration:none;font-size:14px}
-.nav a.on{background:#1a1a1a;color:#fff;border-color:#1a1a1a}
+.nav a{padding:6px 14px;border-radius:999px;border:1px solid var(--border);background:var(--card);color:var(--fg);text-decoration:none;font-size:14px}
+.nav a.on{background:var(--fg);color:var(--bg);border-color:var(--fg)}
 .filters{display:flex;gap:8px;margin:10px 0 4px;flex-wrap:wrap}
-.filters button{border:1px solid #bbb;background:#fff;color:#1a1a1a;border-radius:999px;padding:7px 14px;font-size:14px;cursor:pointer}
-.filters button.on{background:#1a1a1a;color:#fff;border-color:#1a1a1a}
+.filters button{border:1px solid var(--border);background:var(--card);color:var(--fg);border-radius:999px;padding:7px 14px;font-size:14px;cursor:pointer}
+.filters button.on{background:var(--fg);color:var(--bg);border-color:var(--fg)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
-.card{background:#fff;color:#1a1a1a;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.12);padding:12px}
+.card{background:var(--card);color:var(--fg);border-radius:10px;box-shadow:0 1px 3px var(--shadow);padding:12px}
 .card img{width:100%;height:auto;display:block;margin-top:6px}
+html[data-theme="dark"] .card img{filter:invert(1) hue-rotate(180deg)}
 .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
-.top a{font-size:17px;font-weight:700;color:#0b5ed7;text-decoration:none}
+.top a{font-size:17px;font-weight:700;color:var(--link);text-decoration:none}
 .badges{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
-.tf{background:#eef1f5;border-radius:6px;padding:2px 7px;font-size:12px;font-weight:600}
+.tf{background:var(--tfbg);border-radius:6px;padding:2px 7px;font-size:12px;font-weight:600}
 .both{background:#f1c40f;color:#222;border-radius:6px;padding:2px 7px;font-size:12px;font-weight:700}
-.info{font-size:12.5px;color:#555;margin-top:4px;line-height:1.5}
-.ok{color:#1e8449;font-weight:700;font-size:12px} .pend{color:#b9770e;font-size:12px}
-.none{padding:16px;color:#888;background:#fff;border-radius:10px}
+.info{font-size:12.5px;color:var(--info);margin-top:4px;line-height:1.5}
+.ok{color:var(--bull);font-weight:700;font-size:12px} .pend{color:var(--pend);font-size:12px}
+.none{padding:16px;color:var(--muted);background:var(--card);border-radius:10px}
 """
+
+THEME_HEAD = """<script>(function(){var t=null;try{t=localStorage.getItem('theme');}catch(e){}
+if(!t){t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}
+document.documentElement.setAttribute('data-theme',t);})();</script>"""
 
 JS = """
 function setF(f){
@@ -318,6 +330,18 @@ function setF(f){
   });
 }
 document.querySelectorAll('.filters button').forEach(function(b){b.onclick=function(){setF(b.dataset.f);};});
+
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme',t);
+  var b=document.getElementById('theme');
+  if(b){b.textContent=(t==='dark')?'☀️':'🌙'; b.title=(t==='dark')?'Passer en mode clair':'Passer en mode sombre';}
+}
+var tb=document.getElementById('theme');
+if(tb){tb.onclick=function(){
+  var t=(document.documentElement.getAttribute('data-theme')==='dark')?'light':'dark';
+  applyTheme(t); try{localStorage.setItem('theme',t);}catch(e){}
+};}
+applyTheme(document.documentElement.getAttribute('data-theme')||'light');
 """
 
 
@@ -362,7 +386,8 @@ def build_html(res, n_tickers, a, charts):
                + '>TSX</a></div>')
     return f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Divergences RSI{suffix}</title><style>{CSS}</style></head><body>
+<title>Divergences RSI{suffix}</title>{THEME_HEAD}<style>{CSS}</style></head><body>
+<button id="theme" class="theme" title="Passer en mode sombre">🌙</button>
 {nav}<h1>Divergences RSI — surachat / survente{suffix}</h1>
 <div class="sub">Scan du {datetime.now():%d/%m/%Y %H:%M} · {n_tickers} actions ({label}) ·
 {tfs} · RSI(14) · surachat ≥ {a.overbought:g} / survente ≤ {a.oversold:g}<br>
