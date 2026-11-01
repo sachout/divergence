@@ -13,6 +13,7 @@ Installation (une fois) :
     pip3 install yfinance pandas numpy scipy lxml requests matplotlib
 
 Options :
+    --market us | tsx            us = S&P 500 + Nasdaq (défaut) ; tsx = S&P/TSX Composite (Canada)
     --tf daily | weekly | both   (défaut : both)
     --keep-crossed               garder aussi les divergences dont le RSI a déjà recroisé 50
                                  (par défaut elles sont ÉLIMINÉES)
@@ -50,6 +51,8 @@ TF_CONFIG = {
     "Weekly": dict(interval="1wk", period="5y", order=3, min_gap=5, max_gap=15, max_age=4),
 }
 
+MARKETS = {"us": "S&P 500 + Nasdaq", "tsx": "TSX · S&P/TSX Composite"}
+
 # « Bruit » = extrême du RSI entre les deux pivots de la divergence
 NOISE_BEAR_MIN = 60   # baissière : le RSI entre les 2 sommets ne doit pas descendre sous 60
 NOISE_BULL_MAX = 40   # haussière : le RSI entre les 2 creux ne doit pas dépasser 40
@@ -84,12 +87,42 @@ def get_nasdaq_all():
     return df["Symbol"].astype(str).str.replace(".", "-", regex=False).tolist()
 
 
+def get_tsx():
+    """S&P/TSX Composite (~220 actions). Tickers Yahoo : suffixe .TO et '.' -> '-'
+    (ex. BBD.B -> BBD-B.TO, REI.UN -> REI-UN.TO)."""
+    best = None
+    for t in _wiki_tables("https://en.wikipedia.org/wiki/S%26P/TSX_Composite_Index"):
+        if "Ticker" in t.columns and (best is None or len(t) > len(best)):
+            best = t
+    if best is None:
+        return []
+    syms = (best["Ticker"].dropna().astype(str).str.replace(r"\[.*?\]", "", regex=True)
+            .str.strip().str.replace(".", "-", regex=False))
+    return [x + ".TO" for x in syms if x and x.lower() != "nan"]
+
+
+def tv_symbol(t):
+    """Symbole TradingView : SHOP.TO -> TSX:SHOP ; BBD-B.TO -> TSX:BBD.B"""
+    if t.endswith(".TO"):
+        return "TSX:" + t[:-3].replace("-", ".")
+    return t
+
+
 def safe(fn, name):
     try:
         return fn()
     except Exception as e:
         print(f"[!] Impossible de charger {name}: {e}", file=sys.stderr)
         return []
+
+
+def get_universe(market="us", nasdaq_all=False):
+    if market == "tsx":
+        t = set(safe(get_tsx, "S&P/TSX Composite"))
+    else:
+        t = set(safe(get_sp500, "S&P 500"))
+        t |= set(safe(get_nasdaq_all if nasdaq_all else get_nasdaq100, "Nasdaq"))
+    return sorted(x for x in t if isinstance(x, str) and x and x != "nan")
 
 
 # ----------------------------- RSI -----------------------------
@@ -253,6 +286,9 @@ CSS = """
 body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:16px;background:#f5f6f8;color:#1a1a1a}
 h1{font-size:20px;margin:0 0 4px} .sub{color:#666;font-size:13px;margin-bottom:10px}
 h2{font-size:17px;margin:26px 0 10px} .bear h2{color:#c0392b} .bull h2{color:#1e8449}
+.nav{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.nav a{padding:6px 14px;border-radius:999px;border:1px solid #bbb;background:#fff;color:#1a1a1a;text-decoration:none;font-size:14px}
+.nav a.on{background:#1a1a1a;color:#fff;border-color:#1a1a1a}
 .filters{display:flex;gap:8px;margin:10px 0 4px;flex-wrap:wrap}
 .filters button{border:1px solid #bbb;background:#fff;color:#1a1a1a;border-radius:999px;padding:7px 14px;font-size:14px;cursor:pointer}
 .filters button.on{background:#1a1a1a;color:#fff;border-color:#1a1a1a}
@@ -293,12 +329,13 @@ def section(df, title, cls, charts):
          "Aucune divergence pour ce filtre.</div>", '<div class="grid">']
     for _, r in df.iterrows():
         t = html.escape(r["Ticker"])
+        sym = tv_symbol(r["Ticker"]).replace(":", "%3A")
         img = charts.get((r["Ticker"], r["TF"], r["Type"]), "")
         conf = ('<span class="pend">RSI déjà repassé 50</span>' if r["Croise50"] else "")
         both = '<span class="both">Daily + Weekly</span>' if r["Les2"] else ""
         h.append(
             f'<div class="card" data-tf="{r["TF"]}"><div class="top">'
-            f'<a href="https://www.tradingview.com/chart/?symbol={t}" target="_blank">{t}</a>'
+            f'<a href="https://www.tradingview.com/chart/?symbol={sym}" target="_blank">{t}</a>'
             f'<div class="badges">{both}<span class="tf">{r["TF"]}</span>{conf}</div></div>'
             f'<div class="info">Prix {r["Prix1"]:.2f} → {r["Prix2"]:.2f} · '
             f'RSI {r["RSI1"]:.1f} → {r["RSI2"]:.1f} · bruit {r["Bruit"]:.1f}<br>'
@@ -315,11 +352,19 @@ def build_html(res, n_tickers, a, charts):
     tfs = " + ".join(a.tfs)
     c = TF_CONFIG[a.tfs[0]]
     gap_txt = f"{c['min_gap']} à {c['max_gap']}"
+    market = getattr(a, "market", "us")
+    label = html.escape(MARKETS[market])
+    suffix = " — TSX" if market == "tsx" else ""
+    nav = ""
+    if getattr(a, "nav", False):
+        nav = ('<div class="nav"><a href="index.html"' + (' class="on"' if market == "us" else "")
+               + '>S&amp;P 500 + Nasdaq</a><a href="tsx.html"' + (' class="on"' if market == "tsx" else "")
+               + '>TSX</a></div>')
     return f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Divergences RSI</title><style>{CSS}</style></head><body>
-<h1>Divergences RSI — surachat / survente</h1>
-<div class="sub">Scan du {datetime.now():%d/%m/%Y %H:%M} · {n_tickers} actions (S&amp;P 500 + Nasdaq) ·
+<title>Divergences RSI{suffix}</title><style>{CSS}</style></head><body>
+{nav}<h1>Divergences RSI — surachat / survente{suffix}</h1>
+<div class="sub">Scan du {datetime.now():%d/%m/%Y %H:%M} · {n_tickers} actions ({label}) ·
 {tfs} · RSI(14) · surachat ≥ {a.overbought:g} / survente ≤ {a.oversold:g}<br>
 Sur chaque graphique, la ligne colorée relie les deux pivots sur le prix (haut) et sur le RSI (bas).
 Le badge « Daily + Weekly » signale la même divergence sur les deux timeframes.<br>
@@ -335,6 +380,7 @@ Filtres : {gap_txt} bougies entre les deux pivots · bruit (RSI entre les pivots
 # ----------------------------- Main -----------------------------
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--market", choices=["us", "tsx"], default="us")
     ap.add_argument("--tf", choices=["daily", "weekly", "both"], default="both")
     ap.add_argument("--overbought", type=float, default=70)
     ap.add_argument("--oversold", type=float, default=30)
@@ -342,15 +388,15 @@ def main():
                     help="garder les divergences dont le RSI a déjà recroisé 50")
     ap.add_argument("--nasdaq-all", action="store_true")
     ap.add_argument("--batch", type=int, default=100)
-    ap.add_argument("--out", default="divergences_rsi.html")
+    ap.add_argument("--out", default=None)
     ap.add_argument("--no-open", action="store_true")
     a = ap.parse_args()
     a.tfs = {"daily": ["Daily"], "weekly": ["Weekly"], "both": ["Daily", "Weekly"]}[a.tf]
+    a.nav = True
+    a.out = a.out or ("tsx.html" if a.market == "tsx" else "divergences_rsi.html")
 
-    print("Chargement des listes S&P 500 / Nasdaq...")
-    tickers = set(safe(get_sp500, "S&P 500"))
-    tickers |= set(safe(get_nasdaq_all if a.nasdaq_all else get_nasdaq100, "Nasdaq"))
-    tickers = sorted(t for t in tickers if t and t != "nan")
+    print(f"Chargement de la liste des actions ({MARKETS[a.market]})...")
+    tickers = get_universe(a.market, a.nasdaq_all)
     if not tickers:
         sys.exit("Aucun ticker chargé (vérifie ta connexion Internet).")
     print(f"{len(tickers)} actions à scanner.")
