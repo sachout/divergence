@@ -3,6 +3,7 @@
 Scanner de divergences RSI - S&P 500 + Nasdaq - timeframes DAILY et WEEKLY uniquement.
 Ne garde QUE les divergences où le RSI est en surachat (>=70) ou en survente (<=30),
 et élimine celles dont le RSI a déjà recroisé la barre des 50 depuis le 2e pivot.
+Section « en formation » : la dernière bougie serait le 2e pivot (non encore confirmé).
 Règles : 5 à 16 bougies entre les deux pivots ; le « bruit » (extrême du RSI entre les
 deux pivots) ne doit pas dépasser 40 (haussière) ni descendre sous 60 (baissière).
 
@@ -18,6 +19,7 @@ Options :
     --keep-crossed               garder aussi les divergences dont le RSI a déjà recroisé 50
                                  (par défaut elles sont ÉLIMINÉES)
     --nasdaq-all                 tout le Nasdaq (~3000 titres) au lieu du Nasdaq-100
+    --diagnose SCHW              explique règle par règle pourquoi SCHW est (ou n'est pas) dans la liste
 """
 import argparse
 import base64
@@ -138,51 +140,94 @@ def rsi_wilder(close, n=14):
 
 
 # ----------------------------- Détection -----------------------------
+def evaluate(kind, i1, i2, px, rv, n, cfg, ob, os_):
+    """Teste toutes les règles sur la paire de pivots (i1, i2).
+    Retourne (liste de (nom, ok, texte), bruit, rsi_a_recroise_50). La dernière règle est « RSI et 50 »."""
+    bear = kind == "BAISSIERE"
+    nom = "sommet" if bear else "creux"
+    r1, r2 = rv[i1], rv[i2]
+    seg = rv[i1 + 1:i2]                                  # le « bruit » : RSI entre les deux pivots
+    seg_ok = len(seg) > 0 and not np.isnan(seg).any()
+    noise = float(seg.min() if bear else seg.max()) if seg_ok else float("nan")
+    crossed = bool(np.any(rv[i2:] < 50) if bear else np.any(rv[i2:] > 50))
+    if bear:
+        zone_ok = bool(max(r1, r2) >= ob)
+        zone_txt = f"RSI en surachat ≥ {ob} sur un des pivots (max {max(r1, r2):.1f})"
+        noise_ok = seg_ok and noise >= NOISE_BEAR_MIN
+        noise_txt = f"RSI minimum entre les pivots = {noise:.1f} (limite ≥ {NOISE_BEAR_MIN})"
+    else:
+        zone_ok = bool(min(r1, r2) <= os_)
+        zone_txt = f"RSI en survente ≤ {os_} sur un des pivots (min {min(r1, r2):.1f})"
+        noise_ok = seg_ok and noise <= NOISE_BULL_MAX
+        noise_txt = f"RSI maximum entre les pivots = {noise:.1f} (limite ≤ {NOISE_BULL_MAX})"
+    checks = [
+        ("Prix", bool(px[i2] > px[i1]) if bear else bool(px[i2] < px[i1]),
+         f"{nom} 2 {'plus haut' if bear else 'plus bas'} que le 1 ({px[i1]:.2f} → {px[i2]:.2f})"),
+        ("RSI", bool(r2 < r1) if bear else bool(r2 > r1),
+         f"{'plus bas' if bear else 'plus haut'} au pivot 2 ({r1:.1f} → {r2:.1f})"),
+        ("Zone", zone_ok, zone_txt),
+        ("Écart", bool(cfg["min_gap"] <= i2 - i1 <= cfg["max_gap"]),
+         f"{i2 - i1} bougies entre les pivots (autorisé {cfg['min_gap']} à {cfg['max_gap']})"),
+        ("Bruit", bool(noise_ok), noise_txt if seg_ok else "aucun point entre les pivots"),
+        ("Fraîcheur", bool(n - 1 - i2 <= cfg["max_age"]),
+         f"2e pivot il y a {n - 1 - i2} bougies (maximum {cfg['max_age']})"),
+        ("RSI et 50", not crossed,
+         "a déjà recroisé 50 depuis le pivot 2" if crossed else "n’a pas recroisé 50 depuis le pivot 2"),
+    ]
+    return checks, noise, crossed
+
+
 def detect(df, order=4, min_gap=5, max_gap=16, ob=70, os_=30, max_age=10):
-    """Divergences régulières, RSI en surachat/survente uniquement."""
+    """Divergences régulières, RSI en surachat/survente uniquement.
+    Chaque ligne : (type, date1, date2, prix1, prix2, rsi1, rsi2, age, croise50, bruit, en_formation)."""
     close = df["Close"].dropna()
     if len(close) < 60:
         return []
     rsi = rsi_wilder(close)
     px, rv, n = close.values, rsi.values, len(close)
-    out = []
-
-    def crossed50(i2, bearish):
-        after = rv[i2:]
-        return bool(np.any(after < 50) if bearish else np.any(after > 50))
-
+    cfg = dict(order=order, min_gap=min_gap, max_gap=max_gap, max_age=max_age)
     highs = argrelextrema(px, np.greater, order=order)[0]
     lows = argrelextrema(px, np.less, order=order)[0]
+    out = []
 
-    if len(highs) >= 2:
-        i1, i2 = highs[-2], highs[-1]
-        seg = rv[i1 + 1:i2]                       # le « bruit » : RSI entre les deux sommets
-        if (min_gap <= i2 - i1 <= max_gap and n - 1 - i2 <= max_age
-                and not np.isnan(rv[i1]) and not np.isnan(rv[i2]) and not np.isnan(seg).any()
-                and px[i2] > px[i1] and rv[i2] < rv[i1]
-                and max(rv[i1], rv[i2]) >= ob
-                and seg.min() >= NOISE_BEAR_MIN):
-            out.append(("BAISSIERE", close.index[i1], close.index[i2],
-                        px[i1], px[i2], rv[i1], rv[i2], n - 1 - i2,
-                        crossed50(i2, True), float(seg.min())))
+    # 1) Divergences confirmées : les deux derniers pivots (« RSI et 50 » est filtré plus tard)
+    for kind, piv in (("BAISSIERE", highs), ("HAUSSIERE", lows)):
+        if len(piv) >= 2:
+            i1, i2 = piv[-2], piv[-1]
+            checks, noise, crossed = evaluate(kind, i1, i2, px, rv, n, cfg, ob, os_)
+            if all(ok for _, ok, _ in checks[:-1]):
+                out.append((kind, close.index[i1], close.index[i2], px[i1], px[i2],
+                            rv[i1], rv[i2], n - 1 - i2, crossed, noise, False))
 
-    if len(lows) >= 2:
-        i1, i2 = lows[-2], lows[-1]
-        seg = rv[i1 + 1:i2]                       # le « bruit » : RSI entre les deux creux
-        if (min_gap <= i2 - i1 <= max_gap and n - 1 - i2 <= max_age
-                and not np.isnan(rv[i1]) and not np.isnan(rv[i2]) and not np.isnan(seg).any()
-                and px[i2] < px[i1] and rv[i2] > rv[i1]
-                and min(rv[i1], rv[i2]) <= os_
-                and seg.max() <= NOISE_BULL_MAX):
-            out.append(("HAUSSIERE", close.index[i1], close.index[i2],
-                        px[i1], px[i2], rv[i1], rv[i2], n - 1 - i2,
-                        crossed50(i2, False), float(seg.max())))
+    # 2) Divergences « en formation » : la DERNIÈRE bougie serait le 2e pivot (pas encore confirmé)
+    last = n - 1
+    if last > order:
+        left = px[last - order:last]
+        for kind, piv, new_extreme in (("BAISSIERE", highs, px[last] > left.max()),
+                                       ("HAUSSIERE", lows, px[last] < left.min())):
+            if new_extreme and len(piv) >= 1:
+                i1 = piv[-1]
+                checks, noise, crossed = evaluate(kind, i1, last, px, rv, n, cfg, ob, os_)
+                if all(ok for _, ok, _ in checks[:-1]):
+                    out.append((kind, close.index[i1], close.index[last], px[i1], px[last],
+                                rv[i1], rv[last], 0, crossed, noise, True))
     return out
+
+
+def _frame(data, t):
+    """Extrait le DataFrame d'un ticker, quel que soit le format renvoyé par yfinance."""
+    cols = data.columns
+    if isinstance(cols, pd.MultiIndex):
+        for lvl in range(cols.nlevels):
+            if t in cols.get_level_values(lvl):
+                return data.xs(t, axis=1, level=lvl)
+        return pd.DataFrame()
+    return data
 
 
 # ----------------------------- Scan multi-timeframe -----------------------------
 COLS = ["Ticker", "TF", "Type", "Date1", "Date2", "Prix1", "Prix2",
-        "RSI1", "RSI2", "Age", "Croise50", "Bruit"]
+        "RSI1", "RSI2", "Age", "Croise50", "Bruit", "Formation"]
 
 
 def run_scan(tickers, tfs, ob=70, os_=30, batch=100, keep_crossed=False):
@@ -202,7 +247,7 @@ def run_scan(tickers, tfs, ob=70, os_=30, batch=100, keep_crossed=False):
                 continue
             for t in chunk:
                 try:
-                    df = data[t] if len(chunk) > 1 else data
+                    df = _frame(data, t)
                     for r in detect(df, cfg["order"], cfg["min_gap"], cfg["max_gap"],
                                     ob, os_, cfg["max_age"]):
                         rows.append((t, tf) + r)
@@ -218,6 +263,98 @@ def run_scan(tickers, tfs, ob=70, os_=30, batch=100, keep_crossed=False):
     if not res.empty:
         res["Les2"] = res.groupby(["Ticker", "Type"])["TF"].transform("nunique") > 1
     return res, frames
+
+
+# ----------------------------- Diagnostic -----------------------------
+def _diag_png(ticker, tf, close, rsi, highs, lows, W=90):
+    start = max(0, len(close) - W)
+    c, r = close.iloc[start:], rsi.iloc[start:]
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 4.8), sharex=True,
+                                   gridspec_kw={"height_ratios": [3, 2], "hspace": 0.08})
+    ax1.set_title(f"{ticker} · {tf}  (▼ sommets / ▲ creux détectés ; traits = deux derniers)", fontsize=9, loc="left")
+    ax1.plot(c.index, c.values, lw=1.2, color="#333")
+    ax2.plot(r.index, r.values, lw=1.1, color="#6a3d9a")
+    for piv, col, mk in ((highs, "#c0392b", "v"), (lows, "#1e8449", "^")):
+        sel = [i for i in piv if i >= start]
+        ax1.plot([close.index[i] for i in sel], [close.values[i] for i in sel], mk, color=col, ms=5, ls="")
+        if len(piv) >= 2 and piv[-2] >= start:
+            a_, b_ = piv[-2], piv[-1]
+            ax1.plot([close.index[a_], close.index[b_]], [close.values[a_], close.values[b_]], color=col, lw=2)
+            ax2.plot([close.index[a_], close.index[b_]], [rsi.values[a_], rsi.values[b_]], color=col, lw=2, marker="o", ms=4)
+    for y, ls, col in ((70, "--", "#c0392b"), (30, "--", "#1e8449"), (60, ":", "#e67e22"),
+                       (40, ":", "#e67e22"), (50, ":", "#999")):
+        ax2.axhline(y, ls=ls, lw=0.8, color=col)
+    ax2.set_ylim(0, 100); ax2.set_yticks([30, 40, 50, 60, 70]); ax2.set_ylabel("RSI 14", fontsize=8)
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter("%m/%y" if tf == "Weekly" else "%d/%m"))
+    for ax in (ax1, ax2):
+        ax.tick_params(labelsize=7); ax.grid(alpha=0.25)
+        for sp in ("top", "right"):
+            ax.spines[sp].set_visible(False)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=90, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def diagnose(ticker, tfs=("Daily", "Weekly"), ob=70, os_=30):
+    """Explique règle par règle pourquoi une action est ou n'est pas dans la liste.
+    Retourne une liste de (texte, png_bytes) : un élément par timeframe."""
+    results = []
+    for tf in tfs:
+        cfg = TF_CONFIG[tf]
+        L = [f"===== {ticker} · {tf} ====="]
+        data = yf.download(ticker, period=cfg["period"], interval=cfg["interval"],
+                           auto_adjust=True, progress=False)
+        df = _frame(data, ticker) if len(data) else pd.DataFrame()
+        close = df["Close"].dropna() if "Close" in df else pd.Series(dtype=float)
+        if len(close) < 60:
+            L.append("Pas assez de données Yahoo pour ce ticker (orthographe ? TSX : SHOP.TO, BBD-B.TO).")
+            results.append(("\n".join(L), None))
+            continue
+        rsi = rsi_wilder(close)
+        px, rv, n = close.values, rsi.values, len(close)
+        highs = argrelextrema(px, np.greater, order=cfg["order"])[0]
+        lows = argrelextrema(px, np.less, order=cfg["order"])[0]
+        L.append(f"Dernière bougie : {close.index[-1]:%d/%m/%Y} · prix {px[-1]:.2f} · RSI {rv[-1]:.1f}")
+        L.append(f"Règles : {cfg['min_gap']} à {cfg['max_gap']} bougies entre pivots · "
+                 f"2e pivot de moins de {cfg['max_age']} bougies · "
+                 f"bruit ≥ {NOISE_BEAR_MIN} (baissière) / ≤ {NOISE_BULL_MAX} (haussière)")
+        last = n - 1
+        left = px[max(0, last - cfg["order"]):last]
+        for kind, piv, nom in (("BAISSIERE", highs, "sommets"), ("HAUSSIERE", lows, "creux")):
+            bear = kind == "BAISSIERE"
+            sing = "sommet" if bear else "creux"
+            L.append(f"\n-- Divergence {kind.lower()} --")
+            last4 = ", ".join(f"{close.index[i]:%d/%m/%y} (prix {px[i]:.2f}, RSI {rv[i]:.1f})" for i in piv[-4:])
+            L.append(f"Derniers {nom} détectés : {last4 or 'aucun'}")
+            # -- confirmée
+            if len(piv) < 2:
+                L.append("✘ Moins de deux pivots : pas de divergence confirmée possible.")
+            else:
+                checks, _, _ = evaluate(kind, piv[-2], piv[-1], px, rv, n, cfg, ob, os_)
+                for name, ok, txt in checks:
+                    L.append(("  ✔ " if ok else "  ✘ ") + f"{name} : {txt}")
+                failed = [name for name, ok, _ in checks if not ok]
+                L.append("➜ CONFIRMÉE, DANS LA LISTE ✔" if not failed
+                         else "➜ EXCLUE (confirmée) à cause de : " + ", ".join(failed))
+            # -- en formation
+            is_ext = bool(px[last] > left.max()) if bear else bool(px[last] < left.min())
+            if not is_ext or len(piv) < 1:
+                L.append(f"  En formation : non (la dernière bougie n’est pas un nouveau {sing} "
+                         f"sur les {cfg['order']} dernières bougies)")
+            else:
+                checks, _, _ = evaluate(kind, piv[-1], last, px, rv, n, cfg, ob, os_)
+                L.append(f"  En formation : la dernière bougie ({close.index[-1]:%d/%m}) est un nouveau {sing} ; test :")
+                for name, ok, txt in checks:
+                    L.append(("    ✔ " if ok else "    ✘ ") + f"{name} : {txt}")
+                failed = [name for name, ok, _ in checks if not ok]
+                L.append("  ➜ EN FORMATION ✔ (section « en formation » de la page)" if not failed
+                         else "  ➜ non retenue en formation : " + ", ".join(failed))
+        L.append("\nNote : un sommet/creux est compté dès que la bougie suivante le confirme (même une seule) ; "
+                 "il peut donc disparaître si le prix refait un nouvel extrême. "
+                 "La toute dernière bougie n'est jamais un pivot confirmé : elle peut seulement être « en formation ».")
+        results.append(("\n".join(L), _diag_png(ticker, tf, close, rsi, highs, lows)))
+    return results
 
 
 # ----------------------------- Graphiques -----------------------------
@@ -275,7 +412,7 @@ def make_charts(res, frames, ob, os_):
     charts = {}
     for _, r in res.iterrows():
         try:
-            charts[(r["Ticker"], r["TF"], r["Type"])] = make_chart(
+            charts[(r["Ticker"], r["TF"], r["Type"], bool(r["Formation"]))] = make_chart(
                 frames[(r["Ticker"], r["TF"])], r, ob, os_)
         except Exception as e:
             print(f"  [!] graphique {r['Ticker']} {r['TF']}: {e}", file=sys.stderr)
@@ -311,6 +448,10 @@ html[data-theme="dark"] .card img{filter:invert(1) hue-rotate(180deg)}
 .info{font-size:12.5px;color:var(--info);margin-top:4px;line-height:1.5}
 .ok{color:var(--bull);font-weight:700;font-size:12px} .pend{color:var(--pend);font-size:12px}
 .none{padding:16px;color:var(--muted);background:var(--card);border-radius:10px}
+.form h2{color:var(--pend)}
+.typ{border:1px solid currentColor;border-radius:6px;padding:1px 7px;font-size:12px;font-weight:700}
+.typ.b{color:var(--bear)} .typ.h{color:var(--bull)}
+.hint{font-size:12.5px;color:var(--muted);margin:-4px 0 10px}
 """
 
 THEME_HEAD = """<script>(function(){var t=null;try{t=localStorage.getItem('theme');}catch(e){}
@@ -345,34 +486,44 @@ applyTheme(document.documentElement.getAttribute('data-theme')||'light');
 """
 
 
-def section(df, title, cls, charts):
+def section(df, title, cls, charts, show_type=False, hint=""):
     df = df.assign(_w=(df["TF"] == "Weekly")).sort_values(
         ["Les2", "_w", "Age"], ascending=[False, False, True])
     h = [f'<div class="sec {cls}"><h2>{title} (<span class="n">{len(df)}</span>)</h2>',
          f'<div class="none" style="display:{"" if df.empty else "none"}">'
-         "Aucune divergence pour ce filtre.</div>", '<div class="grid">']
+         "Aucune divergence pour ce filtre.</div>"]
+    if hint:
+        h.append(f'<div class="hint">{hint}</div>')
+    h.append('<div class="grid">')
     for _, r in df.iterrows():
         t = html.escape(r["Ticker"])
         sym = tv_symbol(r["Ticker"]).replace(":", "%3A")
-        img = charts.get((r["Ticker"], r["TF"], r["Type"]), "")
+        img = charts.get((r["Ticker"], r["TF"], r["Type"], bool(r["Formation"])), "")
+        typ = ""
+        if show_type:
+            typ = ('<span class="typ b">Baissière</span>' if r["Type"] == "BAISSIERE"
+                   else '<span class="typ h">Haussière</span>')
+        age_txt = "dernière bougie · à confirmer" if r["Formation"] else f'il y a {r["Age"]} barres'
         conf = ('<span class="pend">RSI déjà repassé 50</span>' if r["Croise50"] else "")
         both = '<span class="both">Daily + Weekly</span>' if r["Les2"] else ""
         h.append(
             f'<div class="card" data-tf="{r["TF"]}"><div class="top">'
             f'<a href="https://www.tradingview.com/chart/?symbol={sym}" target="_blank">{t}</a>'
-            f'<div class="badges">{both}<span class="tf">{r["TF"]}</span>{conf}</div></div>'
+            f'<div class="badges">{typ}{both}<span class="tf">{r["TF"]}</span>{conf}</div></div>'
             f'<div class="info">Prix {r["Prix1"]:.2f} → {r["Prix2"]:.2f} · '
             f'RSI {r["RSI1"]:.1f} → {r["RSI2"]:.1f} · bruit {r["Bruit"]:.1f}<br>'
             f'{pd.Timestamp(r["Date1"]):%d/%m/%Y} → {pd.Timestamp(r["Date2"]):%d/%m/%Y} · '
-            f'il y a {r["Age"]} barres</div>'
+            f'{age_txt}</div>'
             + (f'<img alt="{t}" src="data:image/png;base64,{img}">' if img else "") + "</div>")
     h.append("</div></div>")
     return "".join(h)
 
 
 def build_html(res, n_tickers, a, charts):
-    bear = res[res["Type"] == "BAISSIERE"]
-    bull = res[res["Type"] == "HAUSSIERE"]
+    conf_df = res[~res["Formation"]]
+    form_df = res[res["Formation"]]
+    bear = conf_df[conf_df["Type"] == "BAISSIERE"]
+    bull = conf_df[conf_df["Type"] == "HAUSSIERE"]
     tfs = " + ".join(a.tfs)
     c = TF_CONFIG[a.tfs[0]]
     gap_txt = f"{c['min_gap']} à {c['max_gap']}"
@@ -399,12 +550,16 @@ Filtres : {gap_txt} bougies entre les deux pivots · bruit (RSI entre les pivots
 <button data-f="Daily">Daily</button><button data-f="Weekly">Weekly</button></div>
 {section(bear, "Divergences baissières (RSI en surachat)", "bear", charts)}
 {section(bull, "Divergences haussières (RSI en survente)", "bull", charts)}
+{section(form_df, "Divergences en formation (dernière bougie, à confirmer)", "form", charts, True,
+         "La dernière bougie serait le 2e pivot : la divergence n'est confirmée que si la bougie suivante "
+         "s'éloigne de l'extrême. Elle peut disparaître si le prix refait un nouveau sommet / creux.")}
 <script>{JS}</script></body></html>"""
 
 
 # ----------------------------- Main -----------------------------
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--diagnose", metavar="TICKER", help="explique pourquoi ce ticker est ou n'est pas dans la liste")
     ap.add_argument("--market", choices=["us", "tsx"], default="us")
     ap.add_argument("--tf", choices=["daily", "weekly", "both"], default="both")
     ap.add_argument("--overbought", type=float, default=70)
@@ -417,6 +572,14 @@ def main():
     ap.add_argument("--no-open", action="store_true")
     a = ap.parse_args()
     a.tfs = {"daily": ["Daily"], "weekly": ["Weekly"], "both": ["Daily", "Weekly"]}[a.tf]
+    if a.diagnose:
+        for (txt, png), tf in zip(diagnose(a.diagnose.upper(), a.tfs, a.overbought, a.oversold), a.tfs):
+            print(txt, "\n")
+            if png:
+                fn = f"diagnostic_{a.diagnose.upper()}_{tf}.png"
+                open(fn, "wb").write(png)
+                print(f"(graphique : {fn})\n")
+        return
     a.nav = True
     a.out = a.out or ("tsx.html" if a.market == "tsx" else "divergences_rsi.html")
 
