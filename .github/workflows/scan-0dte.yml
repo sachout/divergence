@@ -3,12 +3,7 @@ name: Scan 0DTE
 on:
   schedule:
     - cron: "*/5 13-21 * * 1-5"   # toutes les 5 min ; le script ne travaille que 9h30-16h10 (heure de New York)
-  workflow_dispatch:
-    inputs:
-      force:
-        description: "Forcer le scan même marché fermé (pour tester)"
-        type: boolean
-        default: false
+  workflow_dispatch:            # lancement manuel (bouton « Run workflow ») : scan forcé, même marché fermé
 
 permissions:
   contents: write
@@ -27,7 +22,7 @@ jobs:
         run: |
           H=$((10#$(TZ=America/New_York date +%H%M)))
           D=$(TZ=America/New_York date +%u)
-          if [ "${{ github.event.inputs.force }}" = "true" ] || { [ "$D" -le 5 ] && [ "$H" -ge 930 ] && [ "$H" -le 1610 ]; }; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || { [ "$D" -le 5 ] && [ "$H" -ge 930 ] && [ "$H" -le 1610 ]; }; then
             echo "open=true" >> "$GITHUB_OUTPUT"
           else
             echo "open=false" >> "$GITHUB_OUTPUT"
@@ -51,7 +46,7 @@ jobs:
         continue-on-error: true      # une erreur de données ne doit pas envoyer un e-mail toutes les 5 min
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-        run: python scanner_0dte.py --out 0dte.html --state state_0dte.json ${{ github.event.inputs.force == 'true' && '--force' || '' }}
+        run: python scanner_0dte.py --out 0dte.html --state state_0dte.json ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
 
       - name: Publier la page
         if: steps.gate.outputs.open == 'true'
