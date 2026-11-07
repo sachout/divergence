@@ -1,0 +1,66 @@
+name: Scan 0DTE
+
+on:
+  schedule:
+    - cron: "*/5 13-21 * * 1-5"   # toutes les 5 min ; le script ne travaille que 9h30-16h10 (heure de New York)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Forcer le scan même marché fermé (pour tester)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scan-0dte
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Marché ouvert ?
+        id: gate
+        run: |
+          H=$((10#$(TZ=America/New_York date +%H%M)))
+          D=$(TZ=America/New_York date +%u)
+          if [ "${{ github.event.inputs.force }}" = "true" ] || { [ "$D" -le 5 ] && [ "$H" -ge 930 ] && [ "$H" -le 1610 ]; }; then
+            echo "open=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "open=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.open == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.open == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installer les modules
+        if: steps.gate.outputs.open == 'true'
+        run: pip install -r requirements.txt
+
+      - name: Scan 0DTE
+        if: steps.gate.outputs.open == 'true'
+        continue-on-error: true      # une erreur de données ne doit pas envoyer un e-mail toutes les 5 min
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python scanner_0dte.py --out 0dte.html --state state_0dte.json ${{ github.event.inputs.force == 'true' && '--force' || '' }}
+
+      - name: Publier la page
+        if: steps.gate.outputs.open == 'true'
+        run: |
+          git config user.name "scan-bot"
+          git config user.email "scan-bot@users.noreply.github.com"
+          for f in 0dte.html state_0dte.json; do
+            if [ -f "$f" ]; then git add "$f"; fi
+          done
+          git commit -m "0DTE $(TZ=America/New_York date +'%H:%M') ET" || echo "rien à publier"
+          git pull --rebase
+          git push
