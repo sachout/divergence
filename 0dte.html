@@ -1,0 +1,94 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Divergences 0DTE</title><script>(function(){var t=null;try{t=localStorage.getItem('theme');}catch(e){}
+if(!t){t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}
+document.documentElement.setAttribute('data-theme',t);})();</script><style>
+:root{--bg:#f5f6f8;--fg:#1a1a1a;--muted:#666;--card:#fff;--border:#bbb;--info:#555;--tfbg:#eef1f5;
+--link:#0b5ed7;--shadow:rgba(0,0,0,.12);--bear:#c0392b;--bull:#1e8449;--pend:#b9770e}
+html[data-theme="dark"]{--bg:#0f1115;--fg:#e8e8ea;--muted:#9aa0aa;--card:#1a1d23;--border:#3a3f4a;--info:#b4b9c2;
+--tfbg:#2a2f38;--link:#6ea8fe;--shadow:rgba(0,0,0,.6);--bear:#ff7b6e;--bull:#4cd08a;--pend:#e0a040;color-scheme:dark}
+body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:16px;background:var(--bg);color:var(--fg)}
+h1{font-size:20px;margin:0 0 4px;padding-right:48px} .sub{color:var(--muted);font-size:13px;margin-bottom:10px}
+h2{font-size:17px;margin:26px 0 10px} .bear h2{color:var(--bear)} .bull h2{color:var(--bull)}
+.theme{position:fixed;top:12px;right:12px;z-index:10;width:40px;height:40px;border-radius:50%;
+border:1px solid var(--border);background:var(--card);color:var(--fg);font-size:18px;cursor:pointer;box-shadow:0 1px 4px var(--shadow)}
+.nav{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.nav a{padding:6px 14px;border-radius:999px;border:1px solid var(--border);background:var(--card);color:var(--fg);text-decoration:none;font-size:14px}
+.nav a.on{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.filters{display:flex;gap:8px;margin:10px 0 4px;flex-wrap:wrap}
+.filters button{border:1px solid var(--border);background:var(--card);color:var(--fg);border-radius:999px;padding:7px 14px;font-size:14px;cursor:pointer}
+.filters button.on{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
+.card{background:var(--card);color:var(--fg);border-radius:10px;box-shadow:0 1px 3px var(--shadow);padding:12px}
+.card img{width:100%;height:auto;display:block;margin-top:6px}
+html[data-theme="dark"] .card img{filter:invert(1) hue-rotate(180deg)}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.top a{font-size:17px;font-weight:700;color:var(--link);text-decoration:none}
+.badges{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.tf{background:var(--tfbg);border-radius:6px;padding:2px 7px;font-size:12px;font-weight:600}
+.both{background:#f1c40f;color:#222;border-radius:6px;padding:2px 7px;font-size:12px;font-weight:700}
+.info{font-size:12.5px;color:var(--info);margin-top:4px;line-height:1.5}
+.ok{color:var(--bull);font-weight:700;font-size:12px} .pend{color:var(--pend);font-size:12px}
+.none{padding:16px;color:var(--muted);background:var(--card);border-radius:10px}
+.form h2{color:var(--pend)}
+.typ{border:1px solid currentColor;border-radius:6px;padding:1px 7px;font-size:12px;font-weight:700}
+.typ.b{color:var(--bear)} .typ.h{color:var(--bull)}
+.hint{font-size:12.5px;color:var(--muted);margin:-4px 0 10px}
+
+.tbl{width:100%;border-collapse:collapse;background:var(--card);border-radius:10px;overflow:hidden;box-shadow:0 1px 3px var(--shadow)}
+.tbl th,.tbl td{padding:8px 10px;text-align:center;font-size:13px;border-bottom:1px solid var(--border)}
+.tbl th:first-child,.tbl td:first-child{text-align:left;font-weight:700}
+.tbl small{display:block;color:var(--muted);font-size:11px}
+.sig{display:inline-block;margin:1px 2px;padding:1px 6px;border-radius:6px;font-size:11px;font-weight:700;border:1px solid currentColor}
+.sig.b{color:var(--bear)} .sig.h{color:var(--bull)}
+.warn{background:var(--card);border-left:4px solid var(--pend);padding:8px 12px;border-radius:6px;font-size:12.5px;color:var(--info);margin:10px 0}
+.stale{color:var(--bear);font-weight:700}
+.nav a.on{background:var(--fg);color:var(--bg)}
+</style></head><body>
+<button id="theme" class="theme" title="Passer en mode sombre">🌙</button>
+<div class="nav"><a href="index.html">S&amp;P 500 + Nasdaq</a><a href="tsx.html">TSX</a><a href="0dte.html" class="on">0DTE</a></div>
+<h1>Divergences 0DTE — RSI &amp; CDV</h1>
+<div class="sub">Dernier scan : 07/11/2026 17:23:07 ET · <span id="age" data-ts="2026-11-07T17:23:07.739593-05:00">…</span> ·
+SPY (S&amp;P 500), QQQ (Nasdaq-100), DIA (Dow Jones) · bougies complètes uniquement</div>
+<div class="warn">⚠ Données Yahoo gratuites, éventuellement retardées ; scan GitHub planifié toutes les 5 min
+(sans garantie d'horaire). CDV <b>estimé</b> depuis les bougies, pas le delta réel tick par tick.
+Vérifie toujours sur ton graphique avant d'agir. Ceci n'est pas un conseil financier.</div>
+<table class="tbl"><tr><th></th><th>5 min</th><th>15 min</th><th>1 heure</th></tr><tr><td>S&amp;P 500 (SPY)</td><td>·<small>15:55 · 735.34 · RSI 32</small></td><td>·<small>15:45 · 735.34 · RSI 35</small></td><td>·<small>15:30 · 735.34 · RSI 32</small></td></tr><tr><td>Nasdaq-100 (QQQ)</td><td>·<small>15:55 · 656.22 · RSI 39</small></td><td>·<small>15:45 · 656.22 · RSI 42</small></td><td>·<small>15:30 · 656.22 · RSI 35</small></td></tr><tr><td>Dow Jones (DIA)</td><td>·<small>15:55 · 512.18 · RSI 29</small></td><td>·<small>15:45 · 512.18 · RSI 29</small></td><td>·<small>15:30 · 512.18 · RSI 31</small></td></tr></table>
+<h2>Signaux actifs (0)</h2>
+<div class="hint">▲ haussière · ▼ baissière · ◌ en formation (dernière bougie, à confirmer).
+« RSI + CDV » = les deux divergences au même endroit.</div>
+<div class="none">Aucune divergence active pour le moment.</div>
+<script>
+function setF(f){
+  document.querySelectorAll('.filters button').forEach(function(b){b.classList.toggle('on', b.dataset.f===f);});
+  document.querySelectorAll('.sec').forEach(function(sec){
+    var n=0;
+    sec.querySelectorAll('.card').forEach(function(c){
+      var show=(f==='all'||c.dataset.tf===f); c.style.display=show?'':'none'; if(show)n++;
+    });
+    sec.querySelector('.n').textContent=n;
+    sec.querySelector('.none').style.display=n?'none':'';
+  });
+}
+document.querySelectorAll('.filters button').forEach(function(b){b.onclick=function(){setF(b.dataset.f);};});
+
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme',t);
+  var b=document.getElementById('theme');
+  if(b){b.textContent=(t==='dark')?'☀️':'🌙'; b.title=(t==='dark')?'Passer en mode clair':'Passer en mode sombre';}
+}
+var tb=document.getElementById('theme');
+if(tb){tb.onclick=function(){
+  var t=(document.documentElement.getAttribute('data-theme')==='dark')?'light':'dark';
+  applyTheme(t); try{localStorage.setItem('theme',t);}catch(e){}
+};}
+applyTheme(document.documentElement.getAttribute('data-theme')||'light');
+</script><script>
+(function(){
+  var el=document.getElementById('age'); var ts=el?Date.parse(el.dataset.ts):NaN;
+  function upd(){ if(!el||isNaN(ts))return; var m=Math.round((Date.now()-ts)/60000);
+    el.textContent='il y a '+m+' min'; el.className=(m>12)?'stale':''; }
+  upd(); setInterval(upd,30000);
+  setTimeout(function(){ location.replace(location.pathname+'?t='+Date.now()); }, 60000);
+})();
+</script></body></html>
