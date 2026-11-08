@@ -16,10 +16,12 @@ Instruments (ETF liquides, avec un vrai volume intraday) :
 
 Lancement local :  python3 scanner_0dte.py --force
 -> écrit 0dte.html (et state_0dte.json). Le marché doit être ouvert, sinon ajoute --force
-   (--force ignore l'heure et la fraîcheur des données, utile pour tester).
+   (--force ignore l'heure du marché, montre aussi des signaux plus anciens, sans notification : utile pour tester).
 """
 import argparse
+import base64
 import html
+import io
 import json
 import os
 import sys
@@ -27,6 +29,9 @@ import warnings
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
@@ -102,9 +107,10 @@ def est_delta(df):
 
 
 # ----------------------------- Analyse -----------------------------
-def analyze(df, tf, now):
-    """Analyse un instrument sur un timeframe. Retourne None si pas assez de données."""
-    cfg = TF0[tf]
+def analyze(df, tf, now, sym="", age_factor=1):
+    """Analyse un instrument sur un timeframe. Retourne None si pas assez de données.
+    age_factor > 1 (mode --force) : montre aussi des signaux plus anciens, pour tester."""
+    cfg = dict(TF0[tf], max_age=TF0[tf]["max_age"] * age_factor)
     df = drop_incomplete(df, cfg["minutes"], now)
     if len(df) < 60:
         return None
@@ -143,58 +149,67 @@ def analyze(df, tf, now):
                 t1=df.index[i1], t2=df.index[i2], age=n - 1 - i2,
                 px1=float(px[i1]), px2=float(px[i2]), r1=float(rv[i1]), r2=float(rv[i2]),
                 c1=float(cv[i1]), c2=float(cv[i2]), noise=float(noise),
-                svg=svg_chart(df.index, px, rv, cv, i1, i2, kind, cdv_ok)))
+                old=bool((n - 1 - i2) > TF0[tf]["max_age"]),
+                png=chart_png(sym, tf, df.index, px, rv, cv, i1, i2, kind, rsi_ok, cdv_ok)))
     return dict(last_bar=df.index[-1], last_end=last_end, price=float(px[-1]), rsi=float(rv[-1]),
                 fresh=bool(fresh), signals=signals)
 
 
-# ----------------------------- Graphique SVG (léger, sans image) -----------------------------
-def _poly(vals, x0, y0, w, h, lo, hi):
-    if hi == lo:
-        hi = lo + 1.0
-    m = max(len(vals) - 1, 1)
-    return " ".join(f"{x0 + w * k / m:.1f},{y0 + h * (1 - (v - lo) / (hi - lo)):.1f}"
-                    for k, v in enumerate(vals))
-
-
-def svg_chart(times, px, rv, cv, i1, i2, kind, cdv_ok):
+# ----------------------------- Graphique (même style que la page des actions) -----------------------------
+def chart_png(sym, tf, times, px, rv, cv, i1, i2, kind, rsi_ok, cdv_ok):
+    """Prix (haut), RSI avec bruit (milieu), CDV estimé (bas). PNG transparent en base64."""
     n = len(px)
     a = max(0, i1 - 20)
-    m = n - a
-    X0, W = 36, 296
-    col = "var(--bear)" if kind == "BAISSIERE" else "var(--bull)"
-    panels = [("Prix", 4, 100, px[a:], float(px[a:].min()), float(px[a:].max())),
-              ("RSI", 112, 54, rv[a:], 0.0, 100.0),
-              ("CDV", 178, 54, cv[a:], float(cv[a:].min()), float(cv[a:].max()))]
-    out = ['<svg viewBox="0 0 340 250" width="100%" role="img" xmlns="http://www.w3.org/2000/svg" '
-           'style="margin-top:6px">']
-    for name, y0, h, vals, lo, hi in panels:
-        out.append(f'<rect x="{X0}" y="{y0}" width="{W}" height="{h}" fill="none" '
-                   f'style="stroke:var(--border)" stroke-width="0.6"/>')
-        out.append(f'<text x="2" y="{y0 + 10}" font-size="9" style="fill:var(--muted)">{name}</text>')
-        if name == "RSI":
-            for lvl, c, dash in ((OB, "var(--bear)", "3 3"), (OS, "var(--bull)", "3 3"), (50, "var(--muted)", "1 3")):
-                y = y0 + h * (1 - lvl / 100.0)
-                out.append(f'<line x1="{X0}" x2="{X0 + W}" y1="{y:.1f}" y2="{y:.1f}" stroke-dasharray="{dash}" '
-                           f'stroke-width="0.8" style="stroke:{c}"/>')
-        colr = {"Prix": "var(--fg)", "RSI": "#8e5bd1", "CDV": "#2e9fb3"}[name]
-        out.append(f'<polyline fill="none" stroke-width="1.3" style="stroke:{colr}" '
-                   f'points="{_poly(vals, X0, y0, W, h, lo, hi)}"/>')
-        # ligne entre les deux pivots
-        xs = [X0 + W * (i - a) / max(m - 1, 1) for i in (i1, i2)]
-        pv = {"Prix": (px[i1], px[i2]), "RSI": (rv[i1], rv[i2]), "CDV": (cv[i1], cv[i2])}[name]
-        rngv = (hi - lo) or 1.0
-        ys = [y0 + h * (1 - (v - lo) / rngv) for v in pv]
-        out.append(f'<line x1="{xs[0]:.1f}" y1="{ys[0]:.1f}" x2="{xs[1]:.1f}" y2="{ys[1]:.1f}" '
-                   f'stroke-width="2" style="stroke:{col}"/>')
-        for xx, yy in zip(xs, ys):
-            out.append(f'<circle cx="{xx:.1f}" cy="{yy:.1f}" r="3" style="fill:{col}"/>')
-    t0, t1 = times[a], times[-1]
-    fmt = "%H:%M" if t0.date() == t1.date() else "%d/%m %H:%M"
-    out.append(f'<text x="{X0}" y="246" font-size="9" style="fill:var(--muted)">{t0:{fmt}}</text>')
-    out.append(f'<text x="{X0 + W}" y="246" font-size="9" text-anchor="end" style="fill:var(--muted)">{t1:%H:%M}</text>')
-    out.append("</svg>")
-    return "".join(out)
+    xs = np.arange(a, n)
+    bear = kind == "BAISSIERE"
+    col = "#c0392b" if bear else "#1e8449"
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(6, 5.8), sharex=True,
+                                        gridspec_kw={"height_ratios": [3, 2, 2], "hspace": 0.1})
+    ax1.set_title(f"{sym} · {TF0[tf]['label']}", fontsize=9, loc="left")
+    ax1.plot(xs, px[a:], lw=1.3, color="#333")
+    ax1.plot([i1, i2], [px[i1], px[i2]], color=col, lw=2.2, marker="o", ms=5)
+    ax1.set_ylabel("Prix", fontsize=8)
+
+    # RSI + bruit
+    ax2.plot(xs, rv[a:], lw=1.2, color="#6a3d9a")
+    ax2.axhline(OB, ls="--", lw=0.8, color="#c0392b")
+    ax2.axhline(OS, ls="--", lw=0.8, color="#1e8449")
+    ax2.axhline(50, ls=":", lw=0.6, color="#999")
+    ax2.axhspan(OB, 100, color="#c0392b", alpha=0.07)
+    ax2.axhspan(0, OS, color="#1e8449", alpha=0.07)
+    ax2.plot([i1, i2], [rv[i1], rv[i2]], color=col if rsi_ok else "#999", lw=2.2, marker="o", ms=5)
+    seg = rv[i1 + 1:i2]
+    if len(seg):
+        k = int(np.argmin(seg) if bear else np.argmax(seg))
+        ax2.plot([i1 + 1 + k], [seg[k]], marker="s", ms=5, color="#e67e22", zorder=5)
+        ax2.annotate("bruit", (i1 + 1 + k, seg[k]), textcoords="offset points",
+                     xytext=(0, -12 if bear else 7), ha="center", fontsize=7, color="#e67e22")
+    lim = base.NOISE_BEAR_MIN if bear else base.NOISE_BULL_MAX
+    ax2.axhline(lim, ls=":", lw=0.9, color="#e67e22")
+    ax2.set_ylim(0, 100)
+    ax2.set_yticks(sorted({OS, 50, OB, lim}))
+    ax2.set_ylabel("RSI 14", fontsize=8)
+
+    # CDV estimé
+    ax3.plot(xs, cv[a:], lw=1.2, color="#2e9fb3")
+    ax3.plot([i1, i2], [cv[i1], cv[i2]], color=col if cdv_ok else "#999", lw=2.2, marker="o", ms=5)
+    ax3.set_ylabel("CDV (est.)", fontsize=8)
+    ax3.ticklabel_format(axis="y", style="sci", scilimits=(-3, 5))
+
+    # axe du temps : positions = numéro de bougie, étiquettes = heure
+    multi = times[a].date() != times[-1].date()
+    ticks = sorted(set(np.linspace(a, n - 1, 5).astype(int)))
+    ax3.set_xticks(ticks)
+    ax3.set_xticklabels([times[i].strftime("%d/%m %H:%M" if multi else "%H:%M") for i in ticks])
+    for ax in (ax1, ax2, ax3):
+        ax.tick_params(labelsize=7)
+        ax.grid(alpha=0.25)
+        for sp in ("top", "right"):
+            ax.spines[sp].set_visible(False)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=85, bbox_inches="tight", transparent=True)
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode()
 
 
 # ----------------------------- Page HTML -----------------------------
@@ -259,14 +274,16 @@ def build_page(results, now):
         which = "" if both else f'<span class="tf">{"RSI" if s["rsi"] else "CDV"}</span>'
         status = '<span class="pend">en formation · à confirmer</span>' if s["formation"] else '<span class="ok">confirmée</span>'
         age_txt = "dernière bougie" if s["formation"] else "il y a %d bougies" % s["age"]
+        oldb = '<span class="pend">ancien · test</span>' if s.get("old") else ""
+        img = '<img alt="%s" src="data:image/png;base64,%s">' % (s["sym"], s["png"])
         cards.append(
             f'<div class="card"><div class="top"><a href="https://www.tradingview.com/chart/?symbol={s["sym"]}" '
             f'target="_blank">{s["sym"]} · {TF0[s["tf"]]["label"]}</a>'
-            f'<div class="badges"><span class="typ {kind}">{KIND_FR[s["kind"]]}</span>{both}{which}{status}</div></div>'
+            f'<div class="badges"><span class="typ {kind}">{KIND_FR[s["kind"]]}</span>{both}{which}{status}{oldb}</div></div>'
             f'<div class="info">Prix {s["px1"]:.2f} → {s["px2"]:.2f} · RSI {s["r1"]:.1f} → {s["r2"]:.1f} · '
             f'CDV {_fmt_cdv(s["c1"])} → {_fmt_cdv(s["c2"])}<br>'
             f'{s["t1"]:%d/%m %H:%M} → {s["t2"]:%d/%m %H:%M} ET · '
-            f'{age_txt}</div>{s["svg"]}</div>')
+            f'{age_txt}</div>{img}</div>')
     cards_html = ('<div class="grid">' + "".join(cards) + "</div>") if cards else \
         '<div class="none">Aucune divergence active pour le moment.</div>'
 
@@ -331,7 +348,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="0dte.html")
     ap.add_argument("--state", default="state_0dte.json")
-    ap.add_argument("--force", action="store_true", help="ignorer l'heure du marché et la fraîcheur des données")
+    ap.add_argument("--force", action="store_true", help="mode test : ignore l'heure du marché et la fraîcheur, montre aussi les signaux plus anciens (x10), sans notification")
     ap.add_argument("--no-notify", action="store_true")
     a = ap.parse_args()
 
@@ -350,7 +367,7 @@ def main():
         for sym in INSTRUMENTS:
             df = dfs.get(sym, pd.DataFrame())
             try:
-                r = analyze(df, tf, now) if len(df) else None
+                r = analyze(df, tf, now, sym, 10 if a.force else 1) if len(df) else None
                 if r and a.force:
                     r["fresh"] = True
                 results[(sym, tf)] = r
@@ -371,6 +388,8 @@ def main():
             continue
         for s in r["signals"]:
             s["sym"] = sym
+            if s["old"]:
+                continue                      # signal ancien (mode test) : affiché mais pas notifié
             key = signal_key(s)
             if key not in state["sent"]:
                 state["sent"].append(key)
