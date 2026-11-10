@@ -225,14 +225,16 @@ EXTRA_CSS = """
 .nav a.on{background:var(--fg);color:var(--bg)}
 """
 
-PAGE_JS = """
+AGE_JS = """
 (function(){
   var el=document.getElementById('age'); var ts=el?Date.parse(el.dataset.ts):NaN;
   function upd(){ if(!el||isNaN(ts))return; var m=Math.round((Date.now()-ts)/60000);
     el.textContent='il y a '+m+' min'; el.className=(m>12)?'stale':''; }
   upd(); setInterval(upd,30000);
-  setTimeout(function(){ location.replace(location.pathname+'?t='+Date.now()); }, 60000);
 })();
+"""
+RELOAD_JS = """
+setTimeout(function(){ location.replace(location.pathname+'?t='+Date.now()); }, 60000);
 """
 
 
@@ -241,7 +243,7 @@ def _fmt_cdv(v):
     return f"{v / 1e6:.2f} M" if a >= 1e6 else (f"{v / 1e3:.0f} k" if a >= 1e3 else f"{v:.0f}")
 
 
-def build_page(results, now):
+def build_page(results, now, embed=False):
     rows = []
     for sym, name in INSTRUMENTS.items():
         tds = [f"<td>{html.escape(name)}</td>"]
@@ -288,23 +290,27 @@ def build_page(results, now):
         '<div class="none">Aucune divergence active pour le moment.</div>'
 
     iso = now.isoformat()
+    nav = "" if embed else ('<div class="nav"><a href="index.html">S&amp;P 500 + Nasdaq</a><a href="tsx.html">TSX</a>'
+                            '<a href="0dte.html" class="on">0DTE</a></div>')
+    how = ("actualisation automatique toutes les 60 s tant que cette page est ouverte" if embed
+           else "scan GitHub planifié toutes les 5 min (sans garantie d'horaire)")
+    js = AGE_JS if embed else AGE_JS + RELOAD_JS
     return f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Divergences 0DTE</title>{base.THEME_HEAD}<style>{base.CSS}{EXTRA_CSS}</style></head><body>
 <button id="theme" class="theme" title="Passer en mode sombre">🌙</button>
-<div class="nav"><a href="index.html">S&amp;P 500 + Nasdaq</a><a href="tsx.html">TSX</a><a href="0dte.html" class="on">0DTE</a></div>
-<h1>Divergences 0DTE — RSI &amp; CDV</h1>
+{nav}<h1>Divergences 0DTE — RSI &amp; CDV</h1>
 <div class="sub">Dernier scan : {now:%d/%m/%Y %H:%M:%S} ET · <span id="age" data-ts="{iso}">…</span> ·
 SPY (S&amp;P 500), QQQ (Nasdaq-100), DIA (Dow Jones) · bougies complètes uniquement</div>
-<div class="warn">⚠ Données Yahoo gratuites, éventuellement retardées ; scan GitHub planifié toutes les 5 min
-(sans garantie d'horaire). CDV <b>estimé</b> depuis les bougies, pas le delta réel tick par tick.
+<div class="warn">⚠ Données Yahoo gratuites, éventuellement retardées ; {how}.
+CDV <b>estimé</b> depuis les bougies, pas le delta réel tick par tick.
 Vérifie toujours sur ton graphique avant d'agir. Ceci n'est pas un conseil financier.</div>
 <table class="tbl">{head}{"".join(rows)}</table>
 <h2>Signaux actifs ({len(cards)})</h2>
 <div class="hint">▲ haussière · ▼ baissière · ◌ en formation (dernière bougie, à confirmer).
 « RSI + CDV » = les deux divergences au même endroit.</div>
 {cards_html}
-<script>{base.JS}</script><script>{PAGE_JS}</script></body></html>"""
+<script>{base.JS}</script><script>{js}</script></body></html>"""
 
 
 # ----------------------------- Notifications (ntfy.sh) + état -----------------------------
@@ -344,6 +350,55 @@ def market_open(now):
     return now.weekday() < 5 and 930 <= hm <= 1610
 
 
+def scan_once(now, force=False, state=None, topic="", page_url="", embed=False):
+    """Un scan complet des 3 instruments x 3 timeframes.
+    Retourne (page_html, nombre_de_signaux_actifs, nouveaux_signaux) ; page_html = None si aucune donnée.
+    state : dict {"day", "sent"} pour ne notifier qu'une fois chaque signal (None = pas de notification)."""
+    results = {}
+    for tf in TF0:
+        try:
+            dfs = fetch(tf)
+        except Exception as e:
+            print(f"[!] téléchargement {tf} impossible: {e}", file=sys.stderr)
+            dfs = {}
+        for sym in INSTRUMENTS:
+            df = dfs.get(sym, pd.DataFrame())
+            try:
+                r = analyze(df, tf, now, sym, 10 if force else 1) if len(df) else None
+                if r and force:
+                    r["fresh"] = True
+                results[(sym, tf)] = r
+            except Exception as e:
+                print(f"[!] analyse {sym} {tf}: {e}", file=sys.stderr)
+                results[(sym, tf)] = None
+    if not any(results.values()):
+        return None, 0, []
+
+    new = []
+    for (sym, tf), r in results.items():
+        if not r:
+            continue
+        for sg in r["signals"]:
+            sg["sym"] = sym
+        if state is None or not r["fresh"]:
+            continue
+        for sg in r["signals"]:
+            if sg["old"]:
+                continue                      # signal ancien (mode test) : affiché mais pas notifié
+            key = signal_key(sg)
+            if key not in state["sent"]:
+                state["sent"].append(key)
+                new.append(sg)
+    if new and topic:
+        for sg in new:
+            try:
+                notify(topic, sg, page_url)
+            except Exception as e:
+                print(f"[!] notification: {e}", file=sys.stderr)
+    n_active = sum(len(r["signals"]) for r in results.values() if r)
+    return build_page(results, now, embed), n_active, new
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="0dte.html")
@@ -356,54 +411,17 @@ def main():
     if not a.force and not market_open(now):
         print(f"Marché fermé ({now:%a %H:%M} ET) : rien à faire.")
         return
-
-    results = {}
-    for tf in TF0:
-        try:
-            dfs = fetch(tf)
-        except Exception as e:
-            print(f"[!] téléchargement {tf} impossible: {e}", file=sys.stderr)
-            dfs = {}
-        for sym in INSTRUMENTS:
-            df = dfs.get(sym, pd.DataFrame())
-            try:
-                r = analyze(df, tf, now, sym, 10 if a.force else 1) if len(df) else None
-                if r and a.force:
-                    r["fresh"] = True
-                results[(sym, tf)] = r
-            except Exception as e:
-                print(f"[!] analyse {sym} {tf}: {e}", file=sys.stderr)
-                results[(sym, tf)] = None
-    if not any(results.values()):
-        print("Aucune donnée disponible : page non modifiée.")
-        return
-
     state = load_state(a.state, now)
-    topic = os.environ.get("NTFY_TOPIC", "").strip()
+    topic = "" if a.no_notify else os.environ.get("NTFY_TOPIC", "").strip()
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     page_url = f"https://{repo.split('/')[0]}.github.io/{repo.split('/')[1]}/0dte.html" if "/" in repo else ""
-    new = []
-    for (sym, tf), r in results.items():
-        if not r or not r["fresh"]:
-            continue
-        for s in r["signals"]:
-            s["sym"] = sym
-            if s["old"]:
-                continue                      # signal ancien (mode test) : affiché mais pas notifié
-            key = signal_key(s)
-            if key not in state["sent"]:
-                state["sent"].append(key)
-                new.append(s)
-    print(f"{sum(len(r['signals']) for r in results.values() if r)} signaux actifs, {len(new)} nouveau(x).")
-    if new and topic and not a.no_notify:
-        for s in new:
-            try:
-                notify(topic, s, page_url)
-            except Exception as e:
-                print(f"[!] notification: {e}", file=sys.stderr)
-
+    page, n_active, new = scan_once(now, a.force, state, topic, page_url)
+    if page is None:
+        print("Aucune donnée disponible : page non modifiée.")
+        return
+    print(f"{n_active} signaux actifs, {len(new)} nouveau(x).")
     with open(a.out, "w", encoding="utf-8") as f:
-        f.write(build_page(results, now))
+        f.write(page)
     with open(a.state, "w", encoding="utf-8") as f:
         json.dump(state, f)
     print(f"-> {os.path.abspath(a.out)}")
