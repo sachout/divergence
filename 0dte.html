@@ -46,14 +46,13 @@ html[data-theme="dark"] .card img{filter:invert(1) hue-rotate(180deg)}
 .nav a.on{background:var(--fg);color:var(--bg)}
 </style></head><body>
 <button id="theme" class="theme" title="Passer en mode sombre">🌙</button>
-<div class="nav"><a href="index.html">S&amp;P 500 + Nasdaq</a><a href="tsx.html">TSX</a><a href="0dte.html" class="on">0DTE</a></div>
-<h1>Divergences 0DTE — RSI &amp; CDV</h1>
-<div class="sub">Dernier scan : 10/11/2026 15:06:24 ET · <span id="age" data-ts="2026-11-10T15:06:24.447140-05:00">…</span> ·
+<div class="nav"><a href="index.html">S&amp;P 500 + Nasdaq</a><a href="tsx.html">TSX</a><a href="0dte.html" class="on">0DTE</a></div><h1>Divergences 0DTE — RSI &amp; CDV</h1>
+<div class="sub">Dernier scan : 11/11/2026 14:55:51 ET · <span id="age" data-ts="2026-11-11T14:55:51.708579-05:00">…</span> ·
 SPY (S&amp;P 500), QQQ (Nasdaq-100), DIA (Dow Jones) · bougies complètes uniquement</div>
-<div class="warn">⚠ Données Yahoo gratuites, éventuellement retardées ; scan GitHub planifié toutes les 5 min
-(sans garantie d'horaire). CDV <b>estimé</b> depuis les bougies, pas le delta réel tick par tick.
+<div class="warn">⚠ Données Yahoo gratuites, éventuellement retardées ; scan GitHub planifié toutes les 5 min (sans garantie d'horaire).
+CDV <b>estimé</b> depuis les bougies, pas le delta réel tick par tick.
 Vérifie toujours sur ton graphique avant d'agir. Ceci n'est pas un conseil financier.</div>
-<table class="tbl"><tr><th></th><th>5 min</th><th>15 min</th><th>1 heure</th></tr><tr><td>S&amp;P 500 (SPY)</td><td>·<small>15:00 · 748.13 · RSI 51</small></td><td>·<small>14:45 · 748.91 · RSI 53</small></td><td>·<small>13:30 · 748.57 · RSI 50</small></td></tr><tr><td>Nasdaq-100 (QQQ)</td><td>·<small>15:00 · 671.66 · RSI 50</small></td><td>·<small>14:45 · 672.65 · RSI 51</small></td><td>·<small>13:30 · 672.00 · RSI 49</small></td></tr><tr><td>Dow Jones (DIA)</td><td>·<small>15:00 · 521.40 · RSI 54</small></td><td>·<small>14:45 · 521.72 · RSI 58</small></td><td>·<small>13:30 · 521.52 · RSI 53</small></td></tr></table>
+<table class="tbl"><tr><th></th><th>5 min</th><th>15 min</th><th>1 heure</th></tr><tr><td>S&amp;P 500 (SPY)</td><td>·<small>14:50 · 760.79 · RSI 51</small></td><td>·<small>14:30 · 760.57 · RSI 67</small></td><td>·<small>13:30 · 760.34 · RSI 64</small></td></tr><tr><td>Nasdaq-100 (QQQ)</td><td>—<small>pas de données</small></td><td>·<small>14:30 · 692.36 · RSI 65</small></td><td>·<small>13:30 · 692.38 · RSI 65</small></td></tr><tr><td>Dow Jones (DIA)</td><td>·<small>14:50 · 524.33 · RSI 63</small></td><td>·<small>14:30 · 524.28 · RSI 69</small></td><td>·<small>13:30 · 523.98 · RSI 59</small></td></tr></table>
 <h2>Signaux actifs (0)</h2>
 <div class="hint">▲ haussière · ▼ baissière · ◌ en formation (dernière bougie, à confirmer).
 « RSI + CDV » = les deux divergences au même endroit.</div>
@@ -89,6 +88,7 @@ applyTheme(document.documentElement.getAttribute('data-theme')||'light');
   function upd(){ if(!el||isNaN(ts))return; var m=Math.round((Date.now()-ts)/60000);
     el.textContent='il y a '+m+' min'; el.className=(m>12)?'stale':''; }
   upd(); setInterval(upd,30000);
-  setTimeout(function(){ location.replace(location.pathname+'?t='+Date.now()); }, 60000);
 })();
+
+setTimeout(function(){ location.replace(location.pathname+'?t='+Date.now()); }, 60000);
 </script></body></html>
